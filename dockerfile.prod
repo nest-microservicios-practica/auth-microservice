@@ -1,0 +1,65 @@
+# LO DIVIDIMOS EN TRES ETAPAS PARA OPTIMIZAR LA IMAGEN FINAL
+
+
+# ETAPA 1, DEPENDENCIAS
+# monta el alpine con node, y se encarga de instalar las dependencias de la aplicación,
+FROM node:24-alpine3.23 AS dependencias
+# 24 es la versión de node, alpine es una imagen ligera de linux, y 3.23 es la versión de alpine
+
+WORKDIR /usr/src/app
+
+COPY package.json ./
+COPY package-lock.json ./
+
+RUN npm install
+
+# ETAPA 2, CONSTRUCCIÓN DEL BUILD
+# en esta etapa utiliza el alpine anterior, se encarga de compilar el código fuente de la aplicación , y eliminar las dependencias de desarrollo
+FROM node:24-alpine3.23 AS construccion_build
+
+WORKDIR /usr/src/app
+
+# copiados de la etapa de dependencias los modulos de node
+COPY --from=dependencias /usr/src/app/node_modules ./node_modules
+
+# COPIAMOS EL CODIGO FUENTE DE LA APLICACIÓN, INCLUYENDO LOS ARCHIVOS DE CONFIGURACIÓN Y LOS ARCHIVOS DE FUENTE
+COPY . .
+
+
+# esto es para generar el cliente de prisma, para que se incluya en la imagen final, ya que el cliente de prisma es necesario para ejecutar la aplicación en producción
+# primero debo generar el cliente de prisma, antes de hacer el build, porque el cliente de prisma es necesario para ejecutar la aplicación en producción
+RUN npx prisma generate
+
+RUN npm run build
+
+# eliminando las dependencias de desarrollo para reducir el tamaño de la imagen final, y limpiando la cache de npm para reducir aún más el tamaño de la imagen final.
+RUN npm ci -f --only=production && npm cache clean --force
+
+
+## TODO: migracion de la base de datos, para que se ejecute automáticamente al iniciar la aplicación en producción, hay varias formas de hacerlo,
+# una de ellas es utilizando un script de inicio que se encargue de ejecutar las migraciones antes de iniciar la aplicación,
+
+
+# ETAPA 3, CREACIÓN DE LA IMAGEN FINAL
+# en esta etapa se utiliza el alpine anterior, se encarga de crear la imagen final de la aplicación, copiando solo los archivos necesarios para ejecutar la aplicación en producción
+FROM node:24-alpine3.23 AS produccion
+
+WORKDIR /usr/src/app
+
+# copiamos los modulos de node desde la etapa de construccion_build
+COPY --from=construccion_build /usr/src/app/node_modules ./node_modules
+
+# COPIAMOS EL la carpeta dist que contiene el código compilado de la aplicación, y los archivos de configuración necesarios para ejecutar la aplicación en producción.
+COPY --from=construccion_build /usr/src/app/dist ./dist
+
+# esto es porque tenemos prisma en el proyecto, y el cliente de prisma es necesario para ejecutar la aplicación en producción
+COPY --from=construccion_build /usr/src/app/generated ./generated
+
+ENV NODE_ENV=production
+
+# creamos un usuario no root para ejecutar la aplicación de manera más segura, para no ejecutar la aplicación como root,
+USER node
+
+EXPOSE 3004
+
+CMD ["node", "dist/main.js"]
